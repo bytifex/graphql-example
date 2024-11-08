@@ -1,0 +1,33 @@
+[package]
+name = "graphql-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-graphql = "7.0"
+async-graphql-axum = "7.0"
+async-graphql-parser = "7.0"
+
+tower-http = { version = "0.6", features = ["trace"] }
+tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "macros"] }
+tokio-stream = "0.1"
+axum = { version = "0.7", features = ["ws"] }
+clap = { version = "4.5", features = ["derive"] }
+parking_lot = "0.12"
+log = "0.4"
+env_logger = "0.11"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+thiserror = "2.0"
+option-inspect-none = "1.0"
+futures-util = "0.3"
+uuid = { version = "1.11", features = ["v4"] }
+async-trait = "0.1"
+
+axum-helpers = { git = "https://github.com/bytifex/axum-helpers.git", rev = "32495ce0a46da410d268ae8c607010b1b8f3777b" }
+
+[build-dependencies]
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+tokio = { version = "1.40", features = ["rt", "rt-multi-thread"] }
+
+[features]
+expose-internal-error = []
