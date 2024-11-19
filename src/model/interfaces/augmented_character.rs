@@ -12,7 +12,11 @@ use crate::model::{
 #[derive(Interface)]
 #[graphql(
     field(name = "id", ty = "&Id"),
-    field(name = "name", ty = "&Option<String>"),
+    field(
+        name = "name",
+        ty = "&Option<String>",
+        deprecation = "This field will be removed"
+    ),
     field(name = "nickname", ty = "&String"),
     field(name = "race", ty = "CharacterRace"),
     field(

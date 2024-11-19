@@ -17,7 +17,8 @@ use super::augmented_character::AugmentedCharacter;
     field(
         name = "name",
         ty = "&Option<String>",
-        desc = "Full name of the character"
+        desc = "Full name of the character",
+        deprecation = "This field will be removed",
     ),
     field(name = "nickname", ty = "&String", desc = "Nickname of the character"),
     field(name = "race", ty = "CharacterRace", desc = "Race of the character")

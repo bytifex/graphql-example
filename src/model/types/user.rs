@@ -15,15 +15,21 @@ pub struct User {
     pub state: State,
 
     pub id: Id,
-    pub display_name: String,
+    pub nickname: String,
     pub email_address: Option<String>,
 }
 
 #[Object(use_type_description)]
 impl User {
     /// Nick name of the user
+    #[graphql(deprecation = "Use `nickName` instead")]
     pub async fn display_name(&self) -> &String {
-        &self.display_name
+        &self.nickname
+    }
+
+    /// Nick name of the user
+    pub async fn nick_name(&self) -> &String {
+        &self.nickname
     }
 
     /// Email address of the user

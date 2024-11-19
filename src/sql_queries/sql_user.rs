@@ -38,7 +38,7 @@ pub async fn get_user_by_id(state: &State, id: Id) -> Result<Option<User>, GetUs
         Some(record) => Some(User {
             state: state.clone(),
             id: id.clone(),
-            display_name: record.DisplayName,
+            nickname: record.DisplayName,
             email_address: record.EmailAddress,
         }),
         None => None,
