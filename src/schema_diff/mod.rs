@@ -3,19 +3,36 @@ mod named;
 
 use std::{fmt::Display, fs::File, io::Read, path::Path};
 
-use async_graphql::{Name, Value};
+use async_graphql::{Name, Positioned, Value};
 use async_graphql_parser::{
     parse_schema,
     types::{
-        ConstDirective, DirectiveDefinition, EnumType, EnumValueDefinition, FieldDefinition,
-        InputObjectType, InputValueDefinition, InterfaceType, ObjectType, SchemaDefinition,
-        ServiceDocument, TypeDefinition, TypeKind, TypeSystemDefinition, UnionType,
+        BaseType, ConstDirective, DirectiveDefinition, EnumType, EnumValueDefinition,
+        FieldDefinition, InputObjectType, InputValueDefinition, InterfaceType, ObjectType,
+        SchemaDefinition, ServiceDocument, Type, TypeDefinition, TypeKind, TypeSystemDefinition,
+        UnionType,
     },
 };
 use diff_location::{DiffLocation, DiffLocationSegmentType};
 use named::Named;
 
 use crate::try_into_service_document::TryIntoServiceDocument;
+
+pub enum ChangeType {
+    Breaking,
+    NonBreaking,
+    Unknown,
+}
+
+impl std::fmt::Display for ChangeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChangeType::Breaking => write!(f, "breaking"),
+            ChangeType::NonBreaking => write!(f, "non-breaking"),
+            ChangeType::Unknown => write!(f, "unknown"),
+        }
+    }
+}
 
 pub fn diff_schema(
     schema_left: impl TryIntoServiceDocument<Error: std::error::Error>,
@@ -28,6 +45,7 @@ pub fn diff_schema(
         DiffLocation::new(DiffLocationSegmentType::DirectiveDefinition, None),
         || filter_directive_definitions_of_service_document(&schema_left),
         || filter_directive_definitions_of_service_document(&schema_right),
+        |_new_item| ChangeType::NonBreaking,
         compare_directive_definitions,
     );
 
@@ -35,6 +53,7 @@ pub fn diff_schema(
         DiffLocation::new(DiffLocationSegmentType::SchemaDefinition, None),
         || filter_schemas_of_service_document(&schema_left),
         || filter_schemas_of_service_document(&schema_right),
+        |_new_item| ChangeType::Breaking,
         compare_schema_definitions,
     );
 
@@ -42,6 +61,7 @@ pub fn diff_schema(
         DiffLocation::new(DiffLocationSegmentType::TypeDefinition, None),
         || filter_types_of_service_document(&schema_left),
         || filter_types_of_service_document(&schema_right),
+        |_new_item| ChangeType::NonBreaking,
         compare_type_definitions,
     );
 
@@ -88,38 +108,47 @@ fn filter_types_of_service_document(
 }
 
 fn compare_iterators<
-    T: Named,
-    LeftIteratorType: Iterator<Item = T>,
-    RightIteratorType: Iterator<Item = T>,
+    'a,
+    'b,
+    T: Named + 'static,
+    LeftIteratorType: Iterator<Item = &'a T>,
+    RightIteratorType: Iterator<Item = &'b T>,
 >(
     diff_location: DiffLocation,
     left_iter_generator: impl Fn() -> LeftIteratorType,
     right_iter_generator: impl Fn() -> RightIteratorType,
-    item_comparator_fn: impl Fn(T, T),
+    change_type_if_added: impl Fn(&T) -> ChangeType,
+    item_comparator_fn: impl Fn(&T, &T),
 ) {
-    // breaking changes
+    // item is added
+    // non-breaking changes
     for right in right_iter_generator() {
         match left_iter_generator().find(|left| left.name() == right.name()) {
             Some(left) => item_comparator_fn(left, right),
             None => {
                 println!(
-                    "{}: item is added to the right, name = '{}'",
+                    "{}: item is added to the right, name = '{}' (breaking = {})",
                     diff_location,
                     right.name(),
+                    change_type_if_added(right),
                 );
             }
         }
     }
 
-    // non-breaking changes
+    // item is removed
+    // breaking changes
     for left in left_iter_generator() {
         match right_iter_generator().find(|right| right.name() == left.name()) {
-            Some(_right) => (),
+            Some(_right) => {
+                // already compared
+            }
             None => {
                 println!(
-                    "{}: item is removed from right, name = '{}'",
+                    "{}: item is removed, name = '{}' (breaking = {})",
                     diff_location,
                     left.name(),
+                    ChangeType::Breaking,
                 );
             }
         }
@@ -167,6 +196,9 @@ fn compare_directive_definitions(
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Description, None),
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
         false,
         description_left
             .as_ref()
@@ -180,6 +212,13 @@ fn compare_directive_definitions(
         diff_location.push(DiffLocationSegmentType::InputArgument, None),
         || arguments_left.iter().map(|positioned| &positioned.node),
         || arguments_right.iter().map(|positioned| &positioned.node),
+        |new_item| {
+            if new_item.default_value.is_some() || new_item.ty.node.nullable {
+                ChangeType::NonBreaking
+            } else {
+                ChangeType::Breaking
+            }
+        },
         |left, right| {
             compare_input_value_definitions(
                 diff_location.push(DiffLocationSegmentType::InputArgument, Some(right.name())),
@@ -189,10 +228,15 @@ fn compare_directive_definitions(
         },
     );
 
-    compare_comparable(
+    compare_comparables(
         diff_location.push(DiffLocationSegmentType::IsRepeatable, None),
         is_repeatable_left,
         is_repeatable_right,
+        if *is_repeatable_right {
+            ChangeType::NonBreaking
+        } else {
+            ChangeType::Breaking
+        },
     );
 }
 
@@ -221,16 +265,18 @@ fn compare_schema_definitions(
         Some(definition_right.name()),
     );
 
-    compare_comparable(
+    compare_comparables(
         diff_location.push(DiffLocationSegmentType::Extends, None),
         extend_left,
         extend_right,
+        ChangeType::NonBreaking,
     );
 
     compare_iterators(
         diff_location.push(DiffLocationSegmentType::Directive, None),
         || directives_left.iter().map(|positioned| &positioned.node),
         || directives_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::Unknown,
         |left, right| {
             compare_const_directives(
                 diff_location
@@ -244,6 +290,9 @@ fn compare_schema_definitions(
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Query, None),
+        ChangeType::Breaking,
+        ChangeType::NonBreaking,
+        ChangeType::Breaking,
         true,
         query_left
             .as_ref()
@@ -255,6 +304,9 @@ fn compare_schema_definitions(
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Mutation, None),
+        ChangeType::Breaking,
+        ChangeType::NonBreaking,
+        ChangeType::Breaking,
         true,
         mutation_left
             .as_ref()
@@ -266,6 +318,9 @@ fn compare_schema_definitions(
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Subscription, None),
+        ChangeType::Breaking,
+        ChangeType::NonBreaking,
+        ChangeType::Breaking,
         true,
         subscription_left
             .as_ref()
@@ -300,8 +355,7 @@ fn compare_type_definitions(definition_left: &TypeDefinition, definition_right: 
 
     match (kind_left, kind_right) {
         (TypeKind::Scalar, TypeKind::Scalar) => {
-            diff_location =
-                DiffLocation::new(DiffLocationSegmentType::ScalarDefinition, Some(name));
+            // since the name of the scalars are the same, therefore there is no need to compare
         }
         (TypeKind::Object(type_left), TypeKind::Object(type_right)) => {
             diff_location =
@@ -325,19 +379,34 @@ fn compare_type_definitions(definition_left: &TypeDefinition, definition_right: 
             diff_location = DiffLocation::new(DiffLocationSegmentType::InputObject, Some(name));
             compare_input_object_types(diff_location.clone(), type_left, type_right)
         }
-        (_kind_left, _kind_right) => {
-            println!("{}: type mismatch, name = '{}'", diff_location, name,);
+        // comparing types of different kinds, the code will fail to build this way if a new type is introduced
+        (TypeKind::Scalar, _type_kind_right)
+        | (TypeKind::Object(_), _type_kind_right)
+        | (TypeKind::Interface(_), _type_kind_right)
+        | (TypeKind::Union(_), _type_kind_right)
+        | (TypeKind::Enum(_), _type_kind_right)
+        | (TypeKind::InputObject(_), _type_kind_right) => {
+            println!(
+                "{}: type mismatch, name = '{}' (breaking = {})",
+                diff_location,
+                name,
+                ChangeType::Breaking,
+            );
         }
     }
 
-    compare_comparable(
+    compare_comparables(
         diff_location.push(DiffLocationSegmentType::Extends, None),
         extend_left,
         extend_right,
+        ChangeType::NonBreaking,
     );
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Description, None),
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
         false,
         description_left
             .as_ref()
@@ -351,6 +420,7 @@ fn compare_type_definitions(definition_left: &TypeDefinition, definition_right: 
         diff_location.push(DiffLocationSegmentType::Directive, None),
         || directives_left.iter().map(|positioned| &positioned.node),
         || directives_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::Unknown,
         |left, right| {
             compare_const_directives(
                 diff_location.push(DiffLocationSegmentType::Directive, Some(right.name())),
@@ -363,6 +433,9 @@ fn compare_type_definitions(definition_left: &TypeDefinition, definition_right: 
 
 fn compare_optional_strings(
     diff_location: DiffLocation,
+    change_type_if_different: ChangeType,
+    change_type_if_added: ChangeType,
+    change_type_if_removed: ChangeType,
     print_string: bool,
     left: Option<&str>,
     right: Option<&str>,
@@ -376,8 +449,8 @@ fn compare_optional_strings(
                 }
 
                 println!(
-                    "{}: left value = '{}', right value = '{}'",
-                    diff_location, left, right,
+                    "{}: left value = '{}', right value = '{}' (breaking = {})",
+                    diff_location, left, right, change_type_if_different,
                 );
             }
         }
@@ -388,7 +461,10 @@ fn compare_optional_strings(
                 left = "?";
             }
 
-            println!("{}: removed from right, value = '{}'", diff_location, left,);
+            println!(
+                "{}: item is removed, value = '{}' (breaking = {})",
+                diff_location, left, change_type_if_removed,
+            );
         }
         // non-breaking change
         (None, Some(mut right)) => {
@@ -396,7 +472,10 @@ fn compare_optional_strings(
                 right = "?";
             }
 
-            println!("{}: added to right, value = '{}'", diff_location, right,);
+            println!(
+                "{}: added to right, value = '{}' (breaking = {})",
+                diff_location, right, change_type_if_added,
+            );
         }
     }
 }
@@ -420,12 +499,9 @@ fn compare_object_types(
         diff_location.push(DiffLocationSegmentType::Implements, None),
         || implements_left.iter().map(|positioned| &positioned.node),
         || implements_right.iter().map(|positioned| &positioned.node),
-        |left, right| {
-            compare_comparable(
-                diff_location.push(DiffLocationSegmentType::Implements, Some(left.name())),
-                left.as_str(),
-                right.as_str(),
-            )
+        |_new_item| ChangeType::NonBreaking,
+        |_left, _right| {
+            // since this closure is called only if the names are the same, therofe the items are the same
         },
     );
 
@@ -433,6 +509,7 @@ fn compare_object_types(
         diff_location.push(DiffLocationSegmentType::Field, None),
         || fields_left.iter().map(|positioned| &positioned.node),
         || fields_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::NonBreaking,
         |left, right| {
             compare_field_definitions(
                 diff_location.push(DiffLocationSegmentType::Field, Some(left.name())),
@@ -462,12 +539,9 @@ fn compare_interface_types(
         diff_location.push(DiffLocationSegmentType::Implements, None),
         || implements_left.iter().map(|positioned| &positioned.node),
         || implements_right.iter().map(|positioned| &positioned.node),
-        |left, right| {
-            compare_comparable(
-                diff_location.push(DiffLocationSegmentType::Implements, Some(right.name())),
-                left.as_str(),
-                right.as_str(),
-            )
+        |_new_item| ChangeType::NonBreaking,
+        |_left, _right| {
+            // since this closure is called only if the names are the same, therofe the items are the same
         },
     );
 
@@ -475,6 +549,7 @@ fn compare_interface_types(
         diff_location.push(DiffLocationSegmentType::Field, None),
         || fields_left.iter().map(|positioned| &positioned.node),
         || fields_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::NonBreaking,
         |left, right| {
             compare_field_definitions(
                 diff_location.push(DiffLocationSegmentType::Field, Some(right.name())),
@@ -498,15 +573,9 @@ fn compare_union_types(diff_location: DiffLocation, type_left: &UnionType, type_
         diff_location.push(DiffLocationSegmentType::UnionMemberDefinition, None),
         || members_left.iter().map(|positioned| &positioned.node),
         || members_right.iter().map(|positioned| &positioned.node),
-        |left, right| {
-            compare_comparable(
-                diff_location.push(
-                    DiffLocationSegmentType::UnionMemberDefinition,
-                    Some(right.name()),
-                ),
-                left.as_str(),
-                right.as_str(),
-            )
+        |_new_item| ChangeType::Breaking,
+        |_left, _right| {
+            // since this closure is called only if the names are the same, therofe the items are the same
         },
     );
 }
@@ -524,6 +593,7 @@ fn compare_enum_types(diff_location: DiffLocation, type_left: &EnumType, type_ri
         diff_location.push(DiffLocationSegmentType::EnumValueDefinition, None),
         || values_left.iter().map(|positioned| &positioned.node),
         || values_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::NonBreaking,
         |left, right| {
             compare_enum_value_definitions(
                 diff_location.push(
@@ -554,6 +624,13 @@ fn compare_input_object_types(
         diff_location.push(DiffLocationSegmentType::Field, None),
         || fields_left.iter().map(|positioned| &positioned.node),
         || fields_right.iter().map(|positioned| &positioned.node),
+        |new_item| {
+            if new_item.default_value.is_some() || new_item.ty.node.nullable {
+                ChangeType::NonBreaking
+            } else {
+                ChangeType::Breaking
+            }
+        },
         |left, right| {
             compare_input_value_definitions(
                 diff_location.push(DiffLocationSegmentType::Field, Some(right.name())),
@@ -587,7 +664,7 @@ fn compare_field_definitions(
 
     assert_eq!(name_left.node.as_str(), name_right.node.as_str());
 
-    compare_comparable(
+    compare_types(
         diff_location.push(DiffLocationSegmentType::Type, None),
         &ty_left.node,
         &ty_right.node,
@@ -595,6 +672,9 @@ fn compare_field_definitions(
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Description, None),
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
         false,
         description_left
             .as_ref()
@@ -608,6 +688,13 @@ fn compare_field_definitions(
         diff_location.push(DiffLocationSegmentType::InputArgument, None),
         || arguments_left.iter().map(|positioned| &positioned.node),
         || arguments_right.iter().map(|positioned| &positioned.node),
+        |new_item| {
+            if new_item.default_value.is_some() || new_item.ty.node.nullable {
+                ChangeType::NonBreaking
+            } else {
+                ChangeType::Breaking
+            }
+        },
         |left, right| {
             compare_input_value_definitions(
                 diff_location.push(DiffLocationSegmentType::InputArgument, Some(right.name())),
@@ -621,6 +708,7 @@ fn compare_field_definitions(
         diff_location.push(DiffLocationSegmentType::Directive, None),
         || directives_left.iter().map(|positioned| &positioned.node),
         || directives_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::Unknown,
         |left, right| {
             compare_const_directives(
                 diff_location.push(DiffLocationSegmentType::Directive, Some(right.name())),
@@ -651,15 +739,14 @@ fn compare_const_directives(
     compare_iterators(
         diff_location.push(DiffLocationSegmentType::DirectiveArgument, None),
         || {
-            arguments_left
-                .iter()
-                .map(|(name, value)| (&name.node, &value.node))
+            arguments_left.iter()
+            // .map(|(name, value)| &(&name.node, &value.node))
         },
         || {
-            arguments_right
-                .iter()
-                .map(|(name, value)| (&name.node, &value.node))
+            arguments_right.iter()
+            // .map(|(name, value)| &(&name.node, &value.node))
         },
+        |_new_item| ChangeType::Unknown,
         |left, right| {
             compare_const_directive_argument_value(
                 diff_location.push(
@@ -694,6 +781,9 @@ fn compare_enum_value_definitions(
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Description, None),
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
         false,
         description_left
             .as_ref()
@@ -707,6 +797,7 @@ fn compare_enum_value_definitions(
         diff_location.push(DiffLocationSegmentType::Directive, None),
         || directives_left.iter().map(|positioned| &positioned.node),
         || directives_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::Unknown,
         |left, right| {
             compare_const_directives(
                 diff_location.push(DiffLocationSegmentType::Directive, Some(right.name())),
@@ -740,7 +831,7 @@ fn compare_input_value_definitions(
 
     assert_eq!(name_left.node.as_str(), name_right.node.as_str());
 
-    compare_comparable(
+    compare_types(
         diff_location.push(DiffLocationSegmentType::Type, None),
         &ty_left.node,
         &ty_right.node,
@@ -756,25 +847,41 @@ fn compare_input_value_definitions(
             (Some(left), Some(right)) => {
                 if left != right {
                     println!(
-                        "{}: left value = '{}', right value = '{}'",
-                        diff_location, left, right,
+                        "{}: left value = '{}', right value = '{}' (breaking = {})",
+                        diff_location,
+                        left,
+                        right,
+                        ChangeType::Breaking,
                     );
                 }
             }
             (None, None) => (),
             // breaking change
             (Some(left), None) => {
-                println!("{}: removed from right, value = '{}'", diff_location, left,);
+                println!(
+                    "{}: item is removed, value = '{}' (breaking = {})",
+                    diff_location,
+                    left,
+                    ChangeType::Breaking,
+                );
             }
             // non-breaking change
             (None, Some(right)) => {
-                println!("{}: added to right, value = '{}'", diff_location, right,);
+                println!(
+                    "{}: added to right, value = '{}' (breaking = {})",
+                    diff_location,
+                    right,
+                    ChangeType::NonBreaking,
+                );
             }
         }
     }
 
     compare_optional_strings(
         diff_location.push(DiffLocationSegmentType::Description, None),
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
+        ChangeType::NonBreaking,
         false,
         description_left
             .as_ref()
@@ -788,6 +895,7 @@ fn compare_input_value_definitions(
         diff_location.push(DiffLocationSegmentType::Directive, None),
         || directives_left.iter().map(|positioned| &positioned.node),
         || directives_right.iter().map(|positioned| &positioned.node),
+        |_new_item| ChangeType::Unknown,
         |left, right| {
             compare_const_directives(
                 diff_location.push(DiffLocationSegmentType::Directive, Some(right.name())),
@@ -800,25 +908,58 @@ fn compare_input_value_definitions(
 
 fn compare_const_directive_argument_value(
     diff_location: DiffLocation,
-    arg_left: (&Name, &Value),
-    arg_right: (&Name, &Value),
+    arg_left: &(Positioned<Name>, Positioned<Value>),
+    arg_right: &(Positioned<Name>, Positioned<Value>),
 ) {
-    compare_comparable(
+    compare_comparables(
         diff_location.push(DiffLocationSegmentType::DirectiveArgument, None),
-        arg_left.1,
-        arg_right.1,
+        &arg_left.1.node,
+        &arg_right.1.node,
+        ChangeType::Unknown,
     );
 }
 
-fn compare_comparable<T: Display + Eq + PartialEq + ?Sized>(
+fn compare_comparables<T: Display + Eq + PartialEq + ?Sized>(
     diff_location: DiffLocation,
     left: &T,
     right: &T,
+    change_type: ChangeType,
 ) {
     if *left != *right {
         println!(
-            "{}: left value = {}, right value = {}",
-            diff_location, left, right,
+            "{}: left value = {}, right value = {} (breaking = {})",
+            diff_location, left, right, change_type,
+        )
+    }
+}
+
+fn compare_types_recursive(left: &Type, right: &Type) -> Option<ChangeType> {
+    match (&left.base, &right.base) {
+        (BaseType::Named(left_name), BaseType::Named(right_name)) => {
+            if left_name == right_name {
+                if left.nullable == right.nullable {
+                    None
+                } else if left.nullable {
+                    Some(ChangeType::Breaking)
+                } else {
+                    Some(ChangeType::NonBreaking)
+                }
+            } else {
+                Some(ChangeType::Breaking)
+            }
+        }
+        (BaseType::List(left_inner), BaseType::List(right_inner)) => {
+            compare_types_recursive(left_inner, right_inner)
+        }
+        _ => Some(ChangeType::Breaking),
+    }
+}
+
+fn compare_types(diff_location: DiffLocation, left: &Type, right: &Type) {
+    if let Some(change_type) = compare_types_recursive(left, right) {
+        println!(
+            "{}: left value = {}, right value = {} (breaking = {})",
+            diff_location, left, right, change_type,
         )
     }
 }

@@ -14,7 +14,7 @@ impl FromStr for SchemaSource {
     type Err = CannotParseSchemaSource;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(file_path) = s.strip_prefix("file://") {
+        if let Some(file_path) = s.strip_prefix("file:") {
             Ok(SchemaSource::File(file_path.into()))
         } else if s == "self-schema" {
             Ok(SchemaSource::SelfSchema)
@@ -36,9 +36,9 @@ pub struct ServeParams {
 
 #[derive(Debug, Parser)]
 pub struct SchemaDiffParams {
-    #[arg(help("Format: 'file://<filepath>|self-schema'"))]
+    #[arg(help("Format: 'file:<filepath>|self-schema'"))]
     pub schema_source_left: SchemaSource,
-    #[arg(help("Format: 'file://<filepath>|self-schema'"))]
+    #[arg(help("Format: 'file:<filepath>|self-schema'"))]
     pub schema_source_right: SchemaSource,
 }
 
