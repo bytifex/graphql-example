@@ -35,7 +35,7 @@ pub struct ServeParams {
 }
 
 #[derive(Debug, Parser)]
-pub struct SchemaDiffParams {
+pub struct DiffSchemaParams {
     #[arg(help("Format: 'file:<filepath>|self-schema'"))]
     pub schema_source_left: SchemaSource,
     #[arg(help("Format: 'file:<filepath>|self-schema'"))]
@@ -46,7 +46,7 @@ pub struct SchemaDiffParams {
 pub enum Commands {
     Serve(ServeParams),
     Sdl,
-    SchemaDiff(SchemaDiffParams),
+    DiffSchema(DiffSchemaParams),
 }
 
 #[derive(Debug, Parser)]

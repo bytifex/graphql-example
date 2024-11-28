@@ -8,10 +8,8 @@ mod database;
 mod deus_ex_machina;
 mod error;
 mod model;
-mod schema_diff;
 mod sql_queries;
 mod state;
-mod try_into_service_document;
 mod utils;
 
 use std::{convert::Infallible, fs::remove_dir_all, net::ToSocketAddrs};
@@ -27,8 +25,8 @@ use axum_helpers::{app::AxumApp, response_http_header_mutator::ResponseHttpHeade
 use clap::Parser;
 use cli::{Cli, Commands, SchemaSource};
 use deus_ex_machina::DeusExMachina;
+use graphql_cli_tools::schema_diff::diff_schema;
 use model::{mutation::Mutation, query::Query, subscription::Subscription};
-use schema_diff::diff_schema;
 use state::State;
 use tower_http::trace::TraceLayer;
 
@@ -145,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 schema.sdl_with_options(SDLExportOptions::new().prefer_single_line_descriptions())
             );
         }
-        Commands::SchemaDiff(params) => {
+        Commands::DiffSchema(params) => {
             match (params.schema_source_left, params.schema_source_right) {
                 (SchemaSource::File(path_left), SchemaSource::File(path_right)) => {
                     diff_schema(path_left, path_right)?;
